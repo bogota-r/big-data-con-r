@@ -1,0 +1,136 @@
+---
+title: "Big Data con R: sparklyr y sparkR"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(sparklyr)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# veredas <- readRDS("../datos/veredas.rds")
+veredas <- read.csv("../datos/veredas.csv", colClasses = c(rep("character", 7), "numeric"))
+```
+
+```{r, message=FALSE, warning=FALSE}
+sc <- spark_connect(master = "local")
+df_spark <- copy_to(sc, veredas)
+```
+
+# Lectura de datos
+
+0.  Revisar los nombres:
+
+```{r}
+sparklyr::sdf_schema(df_spark)
+```
+
+```{r}
+sdf_dim(df_spark)
+sdf_nrow(df_spark)
+sdf_ncol(df_spark)
+
+```
+
+1.  Revisar unicidad de la tabla por medio de código de identificador de las veredas (CODIGO_VER):
+
+```{r, warning=FALSE, message=FALSE}
+df_spark %>% group_by(CODIGO_VER) %>% summarise(n = n()) %>% ungroup() %>% 
+  pull(n) %>% table(useNA = "always")
+```
+
+2.  ¿Cuantas veredas hay en el país en el área rural?
+
+```{r, warning=FALSE, message=FALSE}
+# Si el código de la veredad no fuera única
+df_spark %>% summarise(cuenta = n_distinct(CODIGO_VER))
+```
+
+```{r, warning=FALSE, message=FALSE}
+# Dado que el código de la veredad es único:
+df_spark %>%  tally()
+
+## Lo mismo:
+# df_spark %>% summarise(n = n())
+
+```
+
+# Consultas en sparklyr
+
+3.  ¿Cuantas veredas hay en Bogotá?
+
+```{r, warning=FALSE, message=FALSE}
+cons_mpios <- df_spark %>% group_by(DPTOMPIO, NOMB_MPIO) %>% summarise(cuenta = n_distinct(CODIGO_VER)) %>% collect()
+```
+
+```{r, warning=FALSE, message=FALSE}
+class(cons_mpios)
+```
+
+```{r, warning=FALSE, message=FALSE}
+df_spark %>% filter(DPTOMPIO == "11001") %>% 
+             summarise(cuenta = n())
+```
+
+4.  ¿Cuáles son esas veredas? Ordenada de la más grande a la más pequeña:
+
+```{r, warning=FALSE, message=FALSE}
+df_spark %>% filter(DPTOMPIO == "11001") %>% 
+             arrange(desc(AREA_HA)) %>% select(NOMBRE_VER, AREA_HA) %>% head()
+```
+
+-   Veredas más grandes en Barranquilla:
+
+```{r, warning=FALSE, message=FALSE}
+df_spark %>% filter(DPTOMPIO == "08001") %>% 
+             arrange(desc(AREA_HA)) %>% select(NOMBRE_VER, AREA_HA) %>% # collect() %>% 
+             ggplot(aes(x = NOMBRE_VER, y = AREA_HA)) + geom_bar(stat = "identity")  + theme_bw()
+```
+
+```{r, warning=FALSE, message=FALSE}
+# Revisar como fue realizar la consulta en SQL
+df_spark %>% select(NOMBRE_VER, AREA_HA) %>%  filter(DPTOMPIO == "11001") %>% 
+             arrange(desc(AREA_HA))  %>% show_query()
+```
+
+5.  Algo más elaborado:
+
+¿Cuáe es la proporción que ocupan las veredas en cada municipio?, revisemos en particular dos municipios San Antonio del Tequendama y Barranquilla:
+
+```{r, warning=FALSE, message=FALSE}
+cons_area <- df_spark %>% group_by(DPTOMPIO, NOM_DEP, NOMB_MPIO ) %>% 
+  mutate(areat_total = sum(AREA_HA),
+         prop_area = round(100 * AREA_HA / sum(AREA_HA), 1)) %>% 
+         filter(DPTOMPIO %in% c("25645", "08001")) %>%  
+  select(DPTOMPIO, NOM_DEP, NOMB_MPIO,NOMBRE_VER, AREA_HA, areat_total, prop_area) %>%
+  collect() %>% arrange(desc(DPTOMPIO)) 
+```
+
+```{r}
+cons_area
+```
+
+Descubir los principales municipios que tiene mayor área en la totalidad de sus veredas:
+
+```{r, warning=FALSE, message=FALSE}
+cons_areasMpio <- df_spark %>% group_by(DPTOMPIO, NOM_DEP, NOMB_MPIO ) %>% 
+              summarise(TOTAL_AREA = sum(AREA_HA))
+```
+
+```{r, warning=FALSE, message=FALSE}
+sdf_register(x = df_spark, name = "df_sql")
+```
+
+```{r, warning=FALSE, message=FALSE}
+cons_areasMpio2 <- sdf_sql(sc,
+             "SELECT DPTOMPIO, NOM_DEP, NOMB_MPIO, sum(AREA_HA) as TOTAL_AREA
+              FROM df_sql 
+              GROUP BY DPTOMPIO, NOM_DEP, NOMB_MPIO")
+cons_areasMpio2
+```
